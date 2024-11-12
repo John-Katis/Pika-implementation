@@ -9,13 +9,12 @@ use std::time::Instant;
 use std::time::Duration;
 
 const LAN_ADDRESS: &'static str = "127.0.0.1:8088";
-const WAN_ADDRESS: &'static str = "192.168.1.1:8088";
+//const WAN_ADDRESS: &'static str = "192.168.1.1:8088";
 
 #[tokio::main]
 async fn main() {
     // Boolean for server
     let mut is_server=false;
-
 
     // Parsing command line input (run with 0 creates the server)
     let args: Vec<String> = env::args().collect();
@@ -40,51 +39,61 @@ async fn main() {
         eprintln!("No arguments provided.");
     }
 
-
     // Initializing required objects for communication and computation
-
     let index_id = if is_server{0u8} else {1u8};
     let netlayer = NetInterface::new(is_server,LAN_ADDRESS).await;
     let offlinedata = BasicOffline::new();
     let mut p: MPCParty<BasicOffline> = MPCParty::new(offlinedata, netlayer);
     p.setup(10, 10);
 
-
     // Reading input from file
-
     let mut input_vec: Vec<Vec<bool>> = Vec::new();
     match read_bool_vectors_from_file("../input/input1.txt") {
         Ok(u32_vector) => { input_vec = u32_vector; }
         Err(e) => { eprintln!("Error: {}", e); }
     }
 
-    
-    // OFFLINE PHASE
-    // creating keys, randomness and input shares
-
-    let offline_time: f32 = gen_offlinedata(input_vec).as_secs_f32();
+    // OFFLINE PHASE (creating keys, randomness and input shares)
+    let offline_time = gen_offlinedata(input_vec).as_secs_f32();
     p.offlinedata.load_data(&index_id);
     p.netlayer.reset_timer().await;
 
-
     // ONLINE PHASE
+    let online_start = Instant::now(); // Start timer for online phase
 
-    if is_server{
-        pika_eval(&mut p).await;
-    }else{
-        pika_eval(&mut p).await;
+    let pika_result;  // Declare pika_result
+
+    // Obtain result
+    if is_server {
+        pika_result = pika_eval(&mut p).await;
+    } else {
+        pika_result = pika_eval(&mut p).await;
     }
 
-    // BENCHMARKING statistics can be gathered here
-    // OUTPUT can be reconstructed here
+    let online_duration = online_start.elapsed().as_secs_f32(); // Calculate online phase duration
 
+    // BENCHMARKING
+    let benchmarking_stats = p.netlayer.return_benchmarking().await;
+    println!("------- Benchmarking Results ---------");
+    println!("Offline Phase Duration: {:.6} seconds", offline_time);
+    println!("Online Phase Duration: {:.3} seconds", online_duration);
+    println!("Total Elapsed Time: {:.6} seconds", benchmarking_stats[0]);
+    println!("Rounds of Communication: {}", benchmarking_stats[1]);
+    println!("Data Received (KB): {:.6} KB", benchmarking_stats[2]);
+
+    // OUTPUT (pika_result)
+    for (i, value) in pika_result.iter().enumerate() {
+        println!("Pika Evaluation Result {}: {:?}", i, value); 
+    }
 }
 
 
 // Creates the offline object and calls the method to create the data shares
-fn gen_offlinedata(input_bool_vectors: Vec<Vec<bool>>){
+fn gen_offlinedata(input_bool_vectors: Vec<Vec<bool>>) -> Duration {
     let offline = BasicOffline::new();
+    let start = Instant::now();
     offline.gen_data(input_bool_vectors);    
+    start.elapsed() // Return the elapsed time as `Duration`
 }
 
 

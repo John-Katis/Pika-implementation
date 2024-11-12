@@ -63,11 +63,20 @@ impl NetInterface{
         self.rounds_occured = 0u32;
     }
 
+    // Implementation for the benchmarking
     pub async fn return_benchmarking(&mut self)-> Vec<f32> {
-        //TODO imlpement the function that returns:
-        // 1. The time elapsed for the computation
-        // 2. The rounds of communication occured
-        // 3. The amount of data the party received
+
+        // Calculate the time elapsed since the timer was last reset
+        let elapsed_time = self.timer.elapsed().as_secs_f32();
+
+        // Rounds of communication that occured
+        let rounds = self.rounds_occured as f32;
+
+        // Amount of data the party received
+        let data_received_kb = self.received as f32 / 1024.0;
+
+        // Return values in a vector
+        vec![elapsed_time, rounds, data_received_kb]
     }
 
     pub async fn exchange_a_bool(&mut self, msg: bool)->bool{
