@@ -78,7 +78,7 @@ async fn main() {
     println!("Offline Phase Duration: {:.6} seconds", offline_time);
     println!("Online Phase Duration: {:.3} seconds", online_duration);
     println!("Total Elapsed Time: {:.6} seconds", benchmarking_stats[0]);
-    println!("Rounds of Communication: {}", benchmarking_stats[1]);
+    println!("Rounds of Communication: {}", benchmarking_stats[1] as f32 + 1.0);
     println!("Data Received (KB): {:.6} KB", benchmarking_stats[2]);
 
     // OUTPUT (pika_result)

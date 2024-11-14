@@ -33,6 +33,7 @@ pub fn read_file<T: DeserializeOwned>(path: &str) -> Result<T, Error> {
 }
 
 // 6.1 FUNCTION IMPLEMENTATIONS (e.g., tanh, sigmoid, ReLU)
+// Quantize each function into the range [-100, 100]
 // Sigmoid function table generator
 fn generate_sigmoid_table() -> Vec<f32> {
     (-100..=100).map(|i| 1.0 / (1.0 + (-((i as f32) / 10.0)).exp())).collect()
@@ -231,7 +232,7 @@ impl BasicOffline{
             write_file(&format!("../data/k{}.bin", 1), &dpf_1);
 
 
-            // 4. W BIT BASED ON CONTROL BIT (used as control bit to verify computation's output)
+            // 4. W BIT ("sign bit") BASED ON CONTROL BIT (used as control bit to verify computation's output)
             // Drain 16 bits for the first share
             let w0_bits = share_gen_bits.drain(0..16).collect::<Vec<bool>>();
 
@@ -256,7 +257,7 @@ impl BasicOffline{
             write_file(&format!("../data/w{}.bin", 1), &w_vec_1);
 
 
-            // 5. BEAVER TRIPLE
+            // 5. BEAVER TRIPLE (enable efficient secure multiplication in the online phase)
             // Generate beaver triples
             for _ in 0..beaver_size {
                 BeaverTuple::gen_beaver(&mut beavertuples0, &mut beavertuples1, &seed);

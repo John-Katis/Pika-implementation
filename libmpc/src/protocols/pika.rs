@@ -7,54 +7,49 @@ pub const TOTAL_BITS:usize = 32;
 
 pub async fn pika_eval(p: &mut MPCParty<BasicOffline>) -> Vec<RingElm> {
 
-    // Protocol 2(a): reconstruct x = (r - a) mod 2^k
+    // Protocol 2(a): reconstruct x = (r - a) mod 2^k -> r: random val, a: secret sharing of user input
     // Retreive r share via in memory for one party (for party 0 r0 and for party 1 r1)
     let r = p.offlinedata.r_share[0];
 
-    // Retreive a (x) shares via in memory for one party (for party 0 r0 and for party 1 r1)
+    // Retreive a (x) shares via in memory for one party (for party 0 a0 and for party 1 a1)
     let a = p.offlinedata.x_share[0];
 
-    // Exchange r and a shares - round 1 - so exchange is done for proper reconstruction
+    // Exchange r and a shares - round 2 (round 1 is manually added in benchmarking representing offline phase)
     let exchanged_values = p.netlayer.exchange_u16_vec(vec![r, a]).await;
 
     // Store shares 
     let exchanged_r = exchanged_values[0];
     let exchanged_a = exchanged_values[1];
 
-    // Reconstruct x based on exchanged shares
-    let modulus = 1u16.wrapping_shl(TOTAL_BITS as u32); // Define modulus 2^k where TOTAL_BITS is k
-    let x = (exchanged_r.wrapping_sub(exchanged_a) + modulus) % modulus; // Compute x
+    let modulus = 1u32.wrapping_shl(TOTAL_BITS as u32); // Define modulus 2^k where TOTAL_BITS is k
+    let x = ((exchanged_r as u32).wrapping_sub(exchanged_a as u32) + modulus) % modulus; // Reconstruct x
 
 
-    // Protocol 2(b): compute y_sigma and exchange DPF evaluations
-    // Each party retrieves its DPF key
-    let dpf_key = &p.offlinedata.k_share[0];
+    // Protocol 2(b): compute yσ (EvalAll routine -> implement in DPF key)
+    let dpf_key = &p.offlinedata.k_share[0]; // Each party retrieves its DPF key
 
-    // Evaluate the DPF keys over the entire domain and return a vector of boolean values for each party
-    let y_sigma = dpf_key.eval_all();
-
-    // Exchange y_sigma in a single round - round 2
-    let y_sigma_exchanged = p.netlayer.exchange_bool_vec(y_sigma.clone()).await;
+    // Each party evaluates their DPF keys to obtain yσ (vector indicating positions in look-up table based on x)
+    let y_sigma = dpf_key.eval_all(); 
 
 
-    // Protocol 2(c): compute u using values from func_db based on exchanged y_sigma
+    // Protocol 2(c): compute u
     let func_db = load_func_db(); // Load the function database
 
-    // Compute u based on y_sigma_exchanged and func_db
-    let u: Vec<RingElm> = y_sigma_exchanged.iter()
-        .cycle() // repeat values in y_sigma_exchanged
-        .skip(x as usize) // shift starting point by x
-        .take(y_sigma_exchanged.len()) // limit the repetition to the length of y_sigma_exchanged
+    // Shift y_sigma by x and multiply each shifted value by the corresponding function output
+    let u: Vec<RingElm> = y_sigma.iter()
+        .cycle() // repeat values in y_sigma
+        .skip(x as usize) // shift y_sigma by x
+        .take(y_sigma.len()) // limit the repetition to the length of y_sigma
         .enumerate() 
         .map(|(i, &b)| {
             let func_value = func_db.get(i).copied().unwrap_or(1.0); // retrieve function value at index i from function database
             let ring_val = if b { RingElm::one() } else { RingElm::zero() }; // convert b to ring element
             ring_val * RingElm::from(func_value as u32) // multiply ring value by function value
-        }) // map each element in the shifted sequence 
+        }) 
         .collect(); // collect results into a vector
 
 
-    // Protocol 3: Secure Beaver multiplication with u and w shares, single exchange
+    // Protocol 3 - output beaver triple (u * w)
     // Retrieve w share for each party
     let w_share = p.offlinedata.w_share[0];
 
