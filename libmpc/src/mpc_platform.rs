@@ -72,7 +72,8 @@ impl NetInterface{
         // Rounds of communication that occured
         let rounds = self.rounds_occured as f32;
 
-        // Amount of data the party received
+        // Amount of data the party received (1kb = 1024 bytes)
+        //println!(">>>>>> {}", self.received);
         let data_received_kb = self.received as f32 / 1024.0;
 
         // Return values in a vector
@@ -111,7 +112,7 @@ impl NetInterface{
             Ok(n) => {
                 self.received+=xmsg_len;
                 assert_eq!(n, xmsg_len);
-                // println!("Receive {} bytes from partner.", n);
+                println!("Receive 1 {} bytes from partner.", n);
             }        
         }
 
@@ -203,7 +204,7 @@ impl NetInterface{
                 Ok(n) => {
                     self.received += expect_buff_size;
                     assert_eq!(n, expect_buff_size);
-                    // println!("Receive {} bytes from partner.", n);
+                    println!("Receive bool 2 {} bytes from partner.", n);
                 }        
             }
         }
@@ -244,7 +245,7 @@ impl NetInterface{
             Ok(n) => {
                 self.received+=xmsg_len;
                 assert_eq!(n, xmsg_len);
-                // println!("Receive {} bytes from partner.", n);
+                //println!("Receive ring {} bytes from partner.", n);
             }        
         }
         self.rounds_occured+=1;
@@ -289,7 +290,7 @@ impl NetInterface{
                 Ok(n) => {
                     self.received+=msg_len;
                     assert_eq!(n, msg_len);
-                    // println!("Receive {} bytes from partner.", n);
+                    //println!("Receive byte {} bytes from partner.", n);
                 }        
             }
             return_vec.push(buf);   
@@ -326,7 +327,7 @@ impl NetInterface{
             Ok(n) => {
                 self.received+=xmsg_len;
                 assert_eq!(n, xmsg_len);
-                // println!("Receive {} bytes from partner.", n);
+                //println!("Receive u16 {} bytes from partner.", n);
             }        
         }
         self.rounds_occured+=1;

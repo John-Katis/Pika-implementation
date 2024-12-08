@@ -7,69 +7,87 @@ pub const TOTAL_BITS:usize = 32;
 
 pub async fn pika_eval(p: &mut MPCParty<BasicOffline>) -> Vec<RingElm> {
 
-    // Protocol 2(a): reconstruct x = (r - a) mod 2^k -> r: random val, a: secret sharing of user input
-    // Retreive r share via in memory for one party (for party 0 r0 and for party 1 r1)
-    let r = p.offlinedata.r_share[0];
+    // Protocol 2(a): reconstruct x = (r - a) mod 2^k 
+    let r = p.offlinedata.r_share[0]; // Retreive r share
+    let a = p.offlinedata.x_share[0]; // Retreive a share
 
-    // Retreive a (x) shares via in memory for one party (for party 0 a0 and for party 1 a1)
-    let a = p.offlinedata.x_share[0];
+    // Compute this party's share of x locally
+    let local_x = r.wrapping_sub(a); // (r - a) mod 2^k 
 
-    // Exchange r and a shares - round 2 (round 1 is manually added in benchmarking representing offline phase)
-    let exchanged_values = p.netlayer.exchange_u16_vec(vec![r, a]).await;
-
-    // Store shares 
-    let exchanged_r = exchanged_values[0];
-    let exchanged_a = exchanged_values[1];
-
-    let modulus = 1u32.wrapping_shl(TOTAL_BITS as u32); // Define modulus 2^k where TOTAL_BITS is k
-    let x = ((exchanged_r as u32).wrapping_sub(exchanged_a as u32) + modulus) % modulus; // Reconstruct x
+    // Exchange the shares of x with the other party and get the reconstructed x (publicly known mask)
+    let x: u16  = p.netlayer.exchange_u16_vec(vec![local_x]).await[0];
 
 
     // Protocol 2(b): compute yσ (EvalAll routine -> implement in DPF key)
     let dpf_key = &p.offlinedata.k_share[0]; // Each party retrieves its DPF key
 
-    // Each party evaluates their DPF keys to obtain yσ (vector indicating positions in look-up table based on x)
+    // Each party evaluates their DPF keys to obtain yσ contains non-zero value at one index corresponding to a)
     let y_sigma = dpf_key.eval_all(); 
 
 
     // Protocol 2(c): compute u
-    let func_db = load_func_db(); // Load the function database
+    // Load the function database
+    let func_db = load_func_db();
 
-    // Shift y_sigma by x and multiply each shifted value by the corresponding function output
-    let u: Vec<RingElm> = y_sigma.iter()
-        .cycle() // repeat values in y_sigma
-        .skip(x as usize) // shift y_sigma by x
-        .take(y_sigma.len()) // limit the repetition to the length of y_sigma
-        .enumerate() 
-        .map(|(i, &b)| {
-            let func_value = func_db.get(i).copied().unwrap_or(1.0); // retrieve function value at index i from function database
-            let ring_val = if b { RingElm::one() } else { RingElm::zero() }; // convert b to ring element
-            ring_val * RingElm::from(func_value as u32) // multiply ring value by function value
-        }) 
-        .collect(); // collect results into a vector
+    // Initialize the v_sum to zero
+    let mut v_sum = RingElm::zero(); 
+
+    // Compute the sum: v = Σ(y[i+x] * func_db[i])
+    for i in 0..func_db.len() {
+        // Compute shifty for y_sigma c
+        let shift_index = i.wrapping_add(x as usize) % y_sigma.len();
+
+        // Shift y_sigma with shift_index
+        let y_val = if y_sigma[shift_index] { RingElm::one() } else { RingElm::zero() };
+
+        // Access the function database value
+        let func_val = RingElm::from(func_db[i] as u32);
+
+        // Accumulate the product into v_sum - no party knows which value is being retreived
+        v_sum = v_sum + (y_val * func_val);
+    }
+
+    // Set sigma according to the party
+    let sigma: bool = p.netlayer.is_server;
+
+    // Determine the scaling factor (-1)^sigma which ensures output is correctly reconstructed in protocol 3
+    let scaling_factor = if sigma {
+        let mut neg_one = RingElm::one();
+        neg_one.negate(); // Negate 1 to get -1 - server
+        neg_one
+    } else {
+        RingElm::one() // 1 if sigma is false - client
+    };
+
+    // Scale the sum using the scaling factor (-1)^sigma * v_sum
+    let v = scaling_factor * v_sum; 
 
 
-    // Protocol 3 - output beaver triple (u * w)
-    // Retrieve w share for each party
+    // Protocol 3 - output Beaver triple (v * w) (compute v * w secretly without revealing them to either party)
+
+    // Retrieve w share (sign bit) for this party
     let w_share = p.offlinedata.w_share[0];
 
-    // Exchange u and w shares - 3 round
-    let u_w_combined_exchanged = p.netlayer.exchange_ring_vec([u[0], w_share].to_vec()).await;
-
-    // Each party now holds shares of u and w
-    let u_exchanged = u_w_combined_exchanged[0];
-    let w_share_exchanged = u_w_combined_exchanged[1];
-
-    // Retrieve beaver triples
+    // Retrieve the Beaver triple for this computation
     let beaver_triple = &mut p.offlinedata.beavers[0];
 
-    // Calculate delta values (intermediate values for secure computation) 
-    let delta_values = beaver_triple.beaver_mul0(u_exchanged, w_share_exchanged);
+    // Compute delta values (serialized into Vec<u8>) (difference between v*w and values derived from beaver triple)
+    let delta_values_u8 = beaver_triple.beaver_mul0(v, w_share);
 
-    // Complete Beaver multiplication
-    let result = beaver_triple.beaver_mul1(p.netlayer.is_server, &delta_values);
+    // Wrap delta_values_u8 into a Vec<Vec<u8>> for exchange_byte_vec
+    let delta_values_vec_u8 = vec![delta_values_u8];
 
-    vec![result] // Return result (parties share of the product)
+    // Exchange serialized delta values between parties (so that each party can complete the multiplication without learning the others values)
+    let exchanged_deltas_vec = p.netlayer.exchange_byte_vec(&delta_values_vec_u8).await;
+
+    // Extract the exchanged Vec<u8> from the Vec<Vec<u8>>
+    let exchanged_deltas_u8 = &exchanged_deltas_vec[0];
+
+    // Combine shared inputs (v and w) with the precomputed Beaver triple to output the party's share of the final product
+    let result = beaver_triple.beaver_mul1(p.netlayer.is_server, exchanged_deltas_u8);
+
+    vec![result] // Return the result (party's share of the product)
+
 }
 
 
@@ -77,7 +95,7 @@ pub async fn pika_eval(p: &mut MPCParty<BasicOffline>) -> Vec<RingElm> {
 fn load_func_db()->Vec<f32>{
     let mut ret: Vec<f32> = Vec::new();
 
-    match read_file("../data/relu_table.bin") {
+    match read_file("../data/tanh_table.bin") {
         Ok(value) => ret = value,
         Err(e) => println!("Error reading file: {}", e),  
     }

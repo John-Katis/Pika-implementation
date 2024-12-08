@@ -8,8 +8,9 @@ use std::env;
 use std::time::Instant;
 use std::time::Duration;
 
-const LAN_ADDRESS: &'static str = "127.0.0.1:8088";
+//const LAN_ADDRESS: &'static str = "127.0.0.1:8088";
 //const WAN_ADDRESS: &'static str = "192.168.1.1:8088";
+const LAN_ADDRESS: &'static str = "192.168.1.1:8088";
 
 #[tokio::main]
 async fn main() {
@@ -53,38 +54,80 @@ async fn main() {
         Err(e) => { eprintln!("Error: {}", e); }
     }
 
-    // OFFLINE PHASE (creating keys, randomness and input shares)
-    let offline_time = gen_offlinedata(input_vec).as_secs_f32();
-    p.offlinedata.load_data(&index_id);
-    p.netlayer.reset_timer().await;
+    // Variables to store benchmark results
+    let mut offline_times = Vec::new();
+    let mut online_times = Vec::new();
+    let mut comm_rounds = Vec::new();
+    let mut data_received_kb = Vec::new();
+ 
+    // ------- Run the protocol 100 times --------
+    let iterations = 100;
+    for _ in 0..iterations {
+        // OFFLINE PHASE
+        let offline_time = gen_offlinedata(input_vec.clone()).as_secs_f32();
+        p.offlinedata.load_data(&index_id);
+        p.netlayer.reset_timer().await;
+ 
+        // ONLINE PHASE
+        let online_start = Instant::now(); // Start timer for online phase
+ 
+        let pika_result; // Declare pika_result
+ 
+        // Check which party it is (P0 or P1) and run onlie phase
+        if is_server {
+            pika_result = pika_eval(&mut p).await;
+        } else {
+            pika_result = pika_eval(&mut p).await;
+        }
 
-    // ONLINE PHASE
-    let online_start = Instant::now(); // Start timer for online phase
+        let online_duration = online_start.elapsed().as_secs_f32(); // Calculate online phase duration
+ 
+        // BENCHMARKING
+        let benchmarking_stats = p.netlayer.return_benchmarking().await;
+ 
+        // Store benchmark results for this iteration
+        offline_times.push(offline_time);
+        online_times.push(online_duration);
+        comm_rounds.push(benchmarking_stats[1] as f32 + 1.0); // add 1 round for offline
+        data_received_kb.push(benchmarking_stats[2]);
+    
+        // Output of each party for each run
+        println!("Pika Evaluation Result: {:?}", pika_result);
 
-    let pika_result;  // Declare pika_result
+        // -------------- Test ------------------
+        let scaled_input = (323232123 as f32 / (1 << 16) as f32) / (1 << 9) as f32;
 
-    // Obtain result
-    if is_server {
-        pika_result = pika_eval(&mut p).await;
-    } else {
-        pika_result = pika_eval(&mut p).await;
+        let target = tanh(scaled_input);
+
+        println!("Target value: {}", target);
+
+        // Given server and client values
+        let combined = (335422031 as u64 + 987373934 as u64) % (1u64 << 32);
+        let normalized_result = combined as f32 / (1u64 << 32) as f32;
+
+        // Print the normalized result
+        println!("Normalized Result: {}", normalized_result);
     }
+ 
+    // Compute mean benchmarks
+    let mean_offline_time = offline_times.iter().sum::<f32>() / iterations as f32;
+    let mean_online_time = online_times.iter().sum::<f32>() / iterations as f32;
+    let mean_total_time = (offline_times.iter().sum::<f32>() + online_times.iter().sum::<f32>()) / iterations as f32;
+    let mean_comm_rounds = comm_rounds.iter().sum::<f32>() / iterations as f32;
+    let mean_data_received_kb = data_received_kb.iter().sum::<f32>() / iterations as f32;
+ 
+    // Print mean benchmarks
+    println!("------- Mean Benchmarking Results ---------");
+    println!("Offline Phase Mean Duration: {:.6} seconds", mean_offline_time);
+    println!("Online Phase Mean Duration: {:.6} seconds", mean_online_time);
+    println!("Total Mean Elapsed Time: {:.6} seconds", mean_total_time);
+    println!("Mean Rounds of Communication: {:.3}", mean_comm_rounds);
+    println!("Mean Data Received: {:.6} KB", mean_data_received_kb);
+}
 
-    let online_duration = online_start.elapsed().as_secs_f32(); // Calculate online phase duration
-
-    // BENCHMARKING
-    let benchmarking_stats = p.netlayer.return_benchmarking().await;
-    println!("------- Benchmarking Results ---------");
-    println!("Offline Phase Duration: {:.6} seconds", offline_time);
-    println!("Online Phase Duration: {:.3} seconds", online_duration);
-    println!("Total Elapsed Time: {:.6} seconds", benchmarking_stats[0]);
-    println!("Rounds of Communication: {}", benchmarking_stats[1] as f32 + 1.0);
-    println!("Data Received (KB): {:.6} KB", benchmarking_stats[2]);
-
-    // OUTPUT (pika_result)
-    for (i, value) in pika_result.iter().enumerate() {
-        println!("Pika Evaluation Result {}: {:?}", i, value); 
-    }
+// Tanh: f(x) = (e^(x) - e^(-x)) / (e^(x) + e^(-x))
+fn tanh(x: f32) -> f32 {
+    x.tanh()
 }
 
 
@@ -125,7 +168,6 @@ fn read_bool_vectors_from_file(file_path: &str) -> io::Result<Vec<Vec<bool>>> {
             }
         }
     }
-
     Ok(bool_vector)
 }
 

@@ -70,7 +70,7 @@ fn gen_cor_word(bit: bool, bits: &mut (bool, bool), seeds: &mut (prg::PrgSeed, p
     cw
 }
 
-fn u16_to_boolean_vector(num: u16) -> Vec<bool> {
+pub fn u16_to_boolean_vector(num: u16) -> Vec<bool> {
     (0..16).map(|i| ((num >> i) & 1) == 1).rev().collect()
 }
 

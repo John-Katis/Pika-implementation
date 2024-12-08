@@ -3,14 +3,12 @@ use fss::dpf::*;
 use fss::RingElm;
 use fss::Group;
 use fss::prg::PrgSeed;
-use fss::{bits_to_u32,bits_to_u16};
+use fss::bits_to_u32;
 use fss::prg::FixedKeyPrgStream;
 use bincode::Error;
 use std::fs::File;
 use std::io::Write;
 use std::io::Read;
-use fss::Share;
-//use std::mem;
 use std::time::Instant;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -32,21 +30,57 @@ pub fn read_file<T: DeserializeOwned>(path: &str) -> Result<T, Error> {
     Ok(value)
 }
 
-// 6.1 FUNCTION IMPLEMENTATIONS (e.g., tanh, sigmoid, ReLU)
-// Quantize each function into the range [-100, 100]
-// Sigmoid function table generator
-fn generate_sigmoid_table() -> Vec<f32> {
-    (-100..=100).map(|i| 1.0 / (1.0 + (-((i as f32) / 10.0)).exp())).collect()
+
+// FUNCTION IMPLEMENTATIONS 
+// Sigmoid: f(x) = 1 / (1 + e^(-x))
+fn sigmoid(x: f32) -> f32 {
+    1.0 / (1.0 + (-x).exp())
 }
 
-// Tanh function table generator
-fn generate_tanh_table() -> Vec<f32> {
-    (-100..=100).map(|i| ((i as f32) / 10.0).tanh()).collect()
+// Tanh: f(x) = (e^(x) - e^(-x)) / (e^(x) + e^(-x))
+fn tanh(x: f32) -> f32 {
+    x.tanh()
 }
 
-// ReLU function table generator
-fn generate_relu_table() -> Vec<f32> {
-    (-100..=100).map(|i| ((i as f32) / 10.0).max(0.0)).collect()
+// ReLU: f(x) = max(0, x)
+fn relu(x: f32) -> f32 {
+    x.max(0.0)
+}
+
+// Function to generate the function truth table
+fn generate_function_table<F>(func: F) -> Vec<f32>
+where
+    F: Fn(f32) -> f32,
+{
+    // Initialize a vector with enough elements
+    let mut table = Vec::with_capacity(65534);
+
+    // Step 0: Iterate from 0 to maximum value for a 16-bit unsigned integer 65535 - 1 (65534)
+    for i in 0..u16::MAX {
+        // Step 1: Derive the sign of the integer
+        let sign = i & (1 << 15) != 0;
+
+        // Step 2: Split the rest 15 bits
+        let rest_bits = i & !(1 << 15);
+
+        // Step 3: Based on the sign, create either a positive or negative number as f32
+        let mut f32_number = if sign {
+            -(rest_bits as f32) / (1 << 9) as f32
+        } else {
+            rest_bits as f32 / (1 << 9) as f32
+        };
+
+        // Handle special case - 32768 has special bit pattern that is 
+        // evaluated to −0.0 therefore set value is manually set to 64.0
+        if i == (u16::MAX / 2) + 1 {
+            f32_number = 64f32;
+        };
+
+        // Step 4: Evaluate the positive or negative f32 number using the provided function
+        let truth_val = func(f32_number);
+        table.push(truth_val); // push truth value into the table
+    }
+    table
 }
 
 // Save function tables to file
@@ -54,18 +88,6 @@ fn save_function_table<T: Serialize>(path: &str, table: &T) {
     let serialized_data = bincode::serialize(table).expect("Failed to serialize function table");
     let mut file = File::create(path).expect("Failed to create file");
     file.write_all(&serialized_data).expect("Failed to write table data to file");
-}
-
-// Generate and save the truth tables for each function
-pub fn save_function_tables() {
-    let sigmoid_table = generate_sigmoid_table();
-    save_function_table("../data/sigmoid_table.bin", &sigmoid_table);
-
-    let tanh_table = generate_tanh_table();
-    save_function_table("../data/tanh_table.bin", &tanh_table);
-
-    let relu_table = generate_relu_table();
-    save_function_table("../data/relu_table.bin", &relu_table);
 }
 
 pub struct BasicOffline {
@@ -106,26 +128,22 @@ impl BasicOffline{
 
         match read_file(&format!("../data/bvt{}.bin", idx)) {
             Ok(value) => self.beavers = value,
-            Err(e) => println!("Error reading beaver tuple file: {}", e),  // Or handle the error as needed
+            Err(e) => println!("Error reading beaver tuple file: {}", e),  
         }
 
         match read_file("../data/overhead.bin") {
             Ok(value) => self.overhead = value,
-            Err(e) => println!("Error reading beaver tuple file: {}", e),  // Or handle the error as needed
+            Err(e) => println!("Error reading beaver tuple file: {}", e),  
         }
     }
 
-    // Implementation for pika protocol steps 0 & 1 
+    // Implementation for pika protocol offline steps 0 & 1 
     pub fn gen_data(&self, input_bool_vectors: Vec<Vec<bool>>){
         // Start the timer to measure overhead
         let start_time = Instant::now();
 
-        // Helper function for conversion from a u16 integer to a boolean vector
-        fn u16_to_boolean_vector(num: u16) -> Vec<bool> {
-            (0..16).map(|i| ((num >> i) & 1) == 1).rev().collect()
-        }
-
-        // Loop through each quantized input vector and perform tasks 1-6
+        // Loop through each quantized input vector corresponding to an input value 
+        // (in this project for simplicity we have only one input value) 
         for (index, _quantized_x) in input_bool_vectors.iter().enumerate() {
 
             // Input X
@@ -136,9 +154,8 @@ impl BasicOffline{
             let mut stream = FixedKeyPrgStream::new();
             stream.set_key(&seed.key);
         
-            // Generating random bits - enough for randomness for all 3 parties and generating
-            // shares of x and w
-            let mut share_gen_bits = stream.next_bits(3*BOUNDED_DOMAIN+INPUT_DOMAIN);
+            // Generating random bits - enough randomness for all 3 parties 
+            let share_gen_bits = stream.next_bits(3*BOUNDED_DOMAIN+INPUT_DOMAIN);
 
             // This will be used as input to the function that generates the DPF keys (only true value for DPF)
             let beta: bool = true;
@@ -163,30 +180,28 @@ impl BasicOffline{
 
 
             // 1. SPLIT INPUT X INTO SHARES
-            // Loop through each bit in the quantized_x
-            for &bit in quantized_x.iter() {
-                // Convert each bit (true or false) from `quantized_x` to a `RingElm` (0 or 1)
-                let value: RingElm = if bit { RingElm::from(1u32) } else { RingElm::from(0u32) };
+            // Select 16 random bits from the first bounded domain
+            let x0_bits = &share_gen_bits[0 * BOUNDED_DOMAIN..1 * BOUNDED_DOMAIN]; 
 
-                // Ensure there are enough bits to generate a random share before draining
-                if share_gen_bits.len() < 16 {
-                    // Adds more random bits if there are not enough
-                    share_gen_bits.extend(stream.next_bits(3 * BOUNDED_DOMAIN + INPUT_DOMAIN));
+            // Initialize variables to accumulate bits
+            let mut x0_accumulator = 0u16; 
+            let mut x1_accumulator = 0u16; 
+            let mut bit_count = 0;
+
+            // Loop over quantized_x bits and x0 share bits
+            for (&bit, &x0_bit) in quantized_x.iter().zip(x0_bits.iter()) {
+                let x1_bit = bit ^ x0_bit; // Compute x1 bits using XOR (x - x0) because (x = x0 + x1)
+
+                // Accumulate bits to the correct position (with bit_count specifying the position)
+                x0_accumulator |= (x0_bit as u16) << bit_count;
+                x1_accumulator |= (x1_bit as u16) << bit_count;
+                bit_count += 1;
+
+                // If the accumulator is full, push it
+                if bit_count == 16 {
+                    x_vec0.push(x0_accumulator);
+                    x_vec1.push(x1_accumulator);
                 }
-                
-                // Drain 16 bits from `share_gen_bits` for `x0`
-                let x0_bits = share_gen_bits.drain(0..16).collect::<Vec<bool>>();
-                let x0_value = bits_to_u32(&x0_bits);
-
-                // Convert x0 value to `RingElm` 
-                let x0_ringelm = RingElm::from(x0_value);
-
-                // Compute x1 and ensure `value = x0 + x1`
-                let x1_ringelm = value - x0_ringelm;
-
-                // Convert RingElm shares to u16 and store
-                x_vec0.push(x0_ringelm.to_u32().unwrap() as u16); // Party 0's share of x
-                x_vec1.push(x1_ringelm.to_u32().unwrap() as u16); // Party 1's share of x
             }
 
             // Save the shares of x for each party
@@ -194,19 +209,31 @@ impl BasicOffline{
             write_file(&format!("../data/x{}.bin", 1), &x_vec1);
 
 
-            // 2. EXTRACT r, r0, r1 - r USED BY THE DEALER, r0, r1 SHARES FOR EACH PARTY
-            // Extract r form a random bit stream
-            let r: u32 = bits_to_u32(&stream.next_bits(32)); 
-            
-            // Convert r to a ring element
-            let r_ringelm = RingElm::from(r);
-            
-            // Split r into two shares r0 and r1
-            let (r0_ringelm, r1_ringelm) = r_ringelm.share(); 
+            // 2. EXTRACT r, r0, r1 - r USED BY P2, r0, r1 SHARES FOR EACH PARTY P0 and P1
+            // Generate random r bits and r0 bits
+            let r_bits = &share_gen_bits[1 * BOUNDED_DOMAIN..2 * BOUNDED_DOMAIN];
+            let r0_bits = &share_gen_bits[2 * BOUNDED_DOMAIN..3 * BOUNDED_DOMAIN];
 
-            // Convert RingElm shares to u16 and store
-            r_vec_0.push(r0_ringelm.to_u32().unwrap() as u16);
-            r_vec_1.push(r1_ringelm.to_u32().unwrap() as u16);
+            // Initialize variables to accumulate bits
+            let mut r0_accumulator = 0u16; 
+            let mut r1_accumulator = 0u16; 
+            let mut bit_count = 0;
+
+            // Loop over r bits and r_0 bits
+            for (&r_bit, &r0_bit) in r_bits.iter().zip(r0_bits.iter()) {
+                let r1_bit = r_bit ^ r0_bit; // Compute r1 bits using XOR (r - r0) because (r = r0 + r1)
+
+                // Accumulate bits to the correct position (with bit_count specifying the position)
+                r0_accumulator |= (r0_bit as u16) << bit_count;
+                r1_accumulator |= (r1_bit as u16) << bit_count;
+                bit_count += 1;
+
+                // If the accumulator is full, push it
+                if bit_count == 16 {
+                    r_vec_0.push(r0_accumulator);
+                    r_vec_1.push(r1_accumulator);
+                }
+            }
 
             // Save the shares of r for each party
             write_file(&format!("../data/r{}.bin", 0), &r_vec_0);
@@ -214,11 +241,8 @@ impl BasicOffline{
 
 
             // 3. DPF KEYS BASED ON R - EXTRACT CONTROL BIT
-            // Generate a random 16-bit value for the control bit (target index)
-            let r = bits_to_u16(&stream.next_bits(16));
-
             // Convert integer to a boolean vector (representing the control bit (target index))
-            let alpha_bits = u16_to_boolean_vector(r);
+            let alpha_bits = r_bits.to_vec();
 
             // Generate the DPF keys
             let (dpf_key0, dpf_key1, _control_bit) = DPFKey::<bool>::gen(&alpha_bits, &beta);
@@ -232,18 +256,18 @@ impl BasicOffline{
             write_file(&format!("../data/k{}.bin", 1), &dpf_1);
 
 
-            // 4. W BIT ("sign bit") BASED ON CONTROL BIT (used as control bit to verify computation's output)
-            // Drain 16 bits for the first share
-            let w0_bits = share_gen_bits.drain(0..16).collect::<Vec<bool>>();
+            // 4. W BIT ("sign bit") BASED ON CONTROL BIT (used to verify computation's output)
+            // Generate random w0 bits
+            let w0_bits = &share_gen_bits[3*BOUNDED_DOMAIN..3*BOUNDED_DOMAIN+INPUT_DOMAIN];
 
-            // Convert to a u32 integer
+            // Convert the 32-bit boolean sequence to a u32 integer
             let w0_value = bits_to_u32(&w0_bits);
 
-            // Convert to a ring element
+            // Convert the u32 value to a `RingElm`
             let w0 = RingElm::from(w0_value);
 
             // Based on the value of control bit beta w is set to true or false
-            let w = if beta { RingElm::one() } else { RingElm::zero() };
+            let w = if _control_bit { RingElm::one() } else { RingElm::zero() };
 
             // Compute second share w1 and ensure w = w0 + w1
             let w1 = w - w0;
@@ -269,7 +293,15 @@ impl BasicOffline{
         }
 
         // 6. FUNCTION TRUTH TABLE
-        save_function_tables();
+        // Generate the function truth table
+        let tanh_table = generate_function_table(tanh);
+        //let sigmoid_table = generate_function_table(sigmoid);
+        //let relu_table = generate_function_table(relu);
+
+        // Save the truth table to a file
+        save_function_table("../data/tanh_table.bin", &tanh_table);
+        //save_function_table("../data/sigmoid_table.bin", &sigmoid_table);
+        //save_function_table("../data/relu_table.bin", &relu_table);
 
         // End timer and calculate overhead
         let overhead = start_time.elapsed().as_secs_f32();
