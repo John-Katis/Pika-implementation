@@ -94,19 +94,6 @@ async fn main() {
         // Output of each party for each run
         println!("Pika Evaluation Result: {:?}", pika_result);
 
-        // -------------- Test ------------------
-        let scaled_input = (323232123 as f32 / (1 << 16) as f32) / (1 << 9) as f32;
-
-        let target = tanh(scaled_input);
-
-        println!("Target value: {}", target);
-
-        // Given server and client values
-        let combined = (335422031 as u64 + 987373934 as u64) % (1u64 << 32);
-        let normalized_result = combined as f32 / (1u64 << 32) as f32;
-
-        // Print the normalized result
-        println!("Normalized Result: {}", normalized_result);
     }
  
     // Compute mean benchmarks
@@ -123,11 +110,6 @@ async fn main() {
     println!("Total Mean Elapsed Time: {:.6} seconds", mean_total_time);
     println!("Mean Rounds of Communication: {:.3}", mean_comm_rounds);
     println!("Mean Data Received: {:.6} KB", mean_data_received_kb);
-}
-
-// Tanh: f(x) = (e^(x) - e^(-x)) / (e^(x) + e^(-x))
-fn tanh(x: f32) -> f32 {
-    x.tanh()
 }
 
 

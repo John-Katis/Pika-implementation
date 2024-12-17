@@ -55,19 +55,19 @@ where
     // Initialize a vector with enough elements
     let mut table = Vec::with_capacity(65534);
 
-    // Step 0: Iterate from 0 to maximum value for a 16-bit unsigned integer 65535 - 1 (65534)
+    // Step 0: Iterate from 0 to maximum value for a 16-bit unsigned integer 65534 (all possible bit patterns form 16-bit numbers as the input domain is 2^16)
     for i in 0..u16::MAX {
-        // Step 1: Derive the sign of the integer
+        // Step 1: Derive the sign of the integer according to MSBs (allows to wrok with positive and neg. values)
         let sign = i & (1 << 15) != 0;
 
-        // Step 2: Split the rest 15 bits
+        // Step 2: Extract the rest 15 bits (magnitude)
         let rest_bits = i & !(1 << 15);
 
-        // Step 3: Based on the sign, create either a positive or negative number as f32
+        // Step 3: Based on the sign, create either a positive or negative number as f32 (to avoid error accumulation)
         let mut f32_number = if sign {
-            -(rest_bits as f32) / (1 << 9) as f32
+            -(rest_bits as f32) / (1 << 9) as f32 // scale to fixed-point representation to [-63.999, -0.001]
         } else {
-            rest_bits as f32 / (1 << 9) as f32
+            rest_bits as f32 / (1 << 9) as f32 // scale to fixed-point representation [0.0, 63.999]
         };
 
         // Handle special case - 32768 has special bit pattern that is 
@@ -76,7 +76,7 @@ where
             f32_number = 64f32;
         };
 
-        // Step 4: Evaluate the positive or negative f32 number using the provided function
+        // Step 4: Evaluate the positive or negative f32 fixed-point number 
         let truth_val = func(f32_number);
         table.push(truth_val); // push truth value into the table
     }
@@ -142,13 +142,13 @@ impl BasicOffline{
         // Start the timer to measure overhead
         let start_time = Instant::now();
 
-        // Loop through each quantized input vector corresponding to an input value 
+        // Loop through each input bool vector and extract quantized_x (first half of boolean representaiton of input - 16 first most significan bits to stay in input domain ) 
         // (in this project for simplicity we have only one input value) 
         for (index, _quantized_x) in input_bool_vectors.iter().enumerate() {
 
             // Input X
             let quantized_x = &input_bool_vectors[index][0..input_bool_vectors[index].len()/2];
-
+            
             // Setting seed to generate randomness
             let seed = PrgSeed::random();
             let mut stream = FixedKeyPrgStream::new();
@@ -192,7 +192,7 @@ impl BasicOffline{
             for (&bit, &x0_bit) in quantized_x.iter().zip(x0_bits.iter()) {
                 let x1_bit = bit ^ x0_bit; // Compute x1 bits using XOR (x - x0) because (x = x0 + x1)
 
-                // Accumulate bits to the correct position (with bit_count specifying the position)
+                // Accumulate bits to the correct position into a complete 16-bit integer 
                 x0_accumulator |= (x0_bit as u16) << bit_count;
                 x1_accumulator |= (x1_bit as u16) << bit_count;
                 bit_count += 1;
@@ -223,7 +223,7 @@ impl BasicOffline{
             for (&r_bit, &r0_bit) in r_bits.iter().zip(r0_bits.iter()) {
                 let r1_bit = r_bit ^ r0_bit; // Compute r1 bits using XOR (r - r0) because (r = r0 + r1)
 
-                // Accumulate bits to the correct position (with bit_count specifying the position)
+                // Accumulate bits to the correct position into a complete 16-bit integer 
                 r0_accumulator |= (r0_bit as u16) << bit_count;
                 r1_accumulator |= (r1_bit as u16) << bit_count;
                 bit_count += 1;
@@ -241,10 +241,10 @@ impl BasicOffline{
 
 
             // 3. DPF KEYS BASED ON R - EXTRACT CONTROL BIT
-            // Convert integer to a boolean vector (representing the control bit (target index))
+            // Convert array of bits to a vector (representing the target index for DPF)
             let alpha_bits = r_bits.to_vec();
 
-            // Generate the DPF keys
+            // Generate the DPF keys (DPF - evaluated to beta (1) at alpha and 0 everywhere else)
             let (dpf_key0, dpf_key1, _control_bit) = DPFKey::<bool>::gen(&alpha_bits, &beta);
 
             // Store the DPF keys
@@ -256,8 +256,9 @@ impl BasicOffline{
             write_file(&format!("../data/k{}.bin", 1), &dpf_1);
 
 
-            // 4. W BIT ("sign bit") BASED ON CONTROL BIT (used to verify computation's output)
-            // Generate random w0 bits
+            // 4. W BIT ("sign bit") BASED ON CONTROL BIT (used in online phase for correct beaver multiplication output)
+            
+            // Generate 32 random w0 bits (since it's used for secure multiplication)
             let w0_bits = &share_gen_bits[3*BOUNDED_DOMAIN..3*BOUNDED_DOMAIN+INPUT_DOMAIN];
 
             // Convert the 32-bit boolean sequence to a u32 integer
@@ -266,8 +267,10 @@ impl BasicOffline{
             // Convert the u32 value to a `RingElm`
             let w0 = RingElm::from(w0_value);
 
-            // Based on the value of control bit beta w is set to true or false
-            let w = if _control_bit { RingElm::one() } else { RingElm::zero() };
+            // Based on the value of control bit w is set to 1/-1 and later on indicates if final result should be positive/negative
+            let mut neg_one = RingElm::one();
+            neg_one.negate();
+            let w = if _control_bit { RingElm::one() } else { neg_one };
 
             // Compute second share w1 and ensure w = w0 + w1
             let w1 = w - w0;
@@ -281,8 +284,8 @@ impl BasicOffline{
             write_file(&format!("../data/w{}.bin", 1), &w_vec_1);
 
 
-            // 5. BEAVER TRIPLE (enable efficient secure multiplication in the online phase)
-            // Generate beaver triples
+            // 5. BEAVER TRIPLE (enable secure multiplication in the online phase without any party knowing the actual inputs or product during computation)
+            // Generate one beaver triple (beaver_size = 1) and splits it into shares
             for _ in 0..beaver_size {
                 BeaverTuple::gen_beaver(&mut beavertuples0, &mut beavertuples1, &seed);
             }
